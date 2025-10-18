@@ -68,10 +68,16 @@ export default function App() {
       // Establish audio connection when new participant joins
       if (joinedRole === 'user' && role === 'admin' && socketId !== socketRef.current.id) {
         console.log('Admin: new user joined, establishing audio connection');
-        establishAudioConnection(socketId, true); // admin receiving from user
+        // Wait a bit for socket to be ready
+        setTimeout(() => {
+          establishAudioConnection(socketId, true); // admin receiving from user
+        }, 500);
       } else if (joinedRole === 'admin' && role === 'user' && socketId !== socketRef.current.id) {
         console.log('User: admin joined, establishing audio connection');
-        establishAudioConnection(socketId, false); // user sending to admin
+        // Wait a bit for socket to be ready
+        setTimeout(() => {
+          establishAudioConnection(socketId, false); // user sending to admin
+        }, 500);
       }
     });
     s.on('participant-left', ({ socketId }) => {
@@ -203,7 +209,9 @@ export default function App() {
           
           peer.on('signal', (sig) => {
             console.log('Admin responding to user screen signal');
-            socketRef.current.emit('admin-screen-signal', { targetId: from, signal: sig });
+            if (socketRef.current) {
+              socketRef.current.emit('admin-screen-signal', { targetId: from, signal: sig });
+            }
           });
           
           peer.on('stream', (remoteStream) => {
@@ -216,19 +224,44 @@ export default function App() {
           
           peer.on('error', (err) => {
             console.error('Admin screen peer error:', err);
+            // Clean up on error
+            if (peersRef.current.has(`screen-${from}`)) {
+              peersRef.current.delete(`screen-${from}`);
+            }
+          });
+          
+          peer.on('close', () => {
+            console.log('Admin screen peer closed:', from);
+            peersRef.current.delete(`screen-${from}`);
           });
           
           peersRef.current.set(`screen-${from}`, peer);
         }
-        peer.signal(signal);
+        
+        // Signal the peer if it exists and is ready
+        if (peer && typeof peer.signal === 'function') {
+          try {
+            peer.signal(signal);
+          } catch (err) {
+            console.error('Error signaling screen peer:', err);
+          }
+        } else {
+          console.warn('Screen peer not ready for signaling:', from);
+        }
       }
     });
     
     s.on('admin-screen-signal', ({ signal }) => {
       console.log('User received admin screen signal response');
       const peer = peersRef.current.get('user-screen-share');
-      if (peer) {
-        peer.signal(signal);
+      if (peer && typeof peer.signal === 'function') {
+        try {
+          peer.signal(signal);
+        } catch (err) {
+          console.error('Error signaling user screen peer:', err);
+        }
+      } else {
+        console.warn('User screen peer not ready for signaling');
       }
     });
     
@@ -299,11 +332,12 @@ export default function App() {
     }
   }
 
-  // New simplified audio handling
+  // Simplified audio handling with better error checking
   function establishAudioConnection(targetId, isAdminReceiving) {
-    console.log('Establishing audio connection:', { targetId, isAdminReceiving, role });
+    console.log('Establishing audio connection:', { targetId, isAdminReceiving, role, socketConnected: !!socketRef.current });
     
     if (isAdminReceiving && role === 'admin') {
+      console.log('Admin: Creating peer to receive audio from user:', targetId);
       // Admin receiving from user - create peer without stream
       const peer = new Peer({ 
         initiator: false, 
@@ -317,12 +351,16 @@ export default function App() {
       });
       
       peer.on('signal', (sig) => {
-        console.log('Admin responding to user audio signal');
-        socketRef.current.emit('admin-audio-signal', { targetId, signal: sig });
+        console.log('Admin responding to user audio signal for:', targetId);
+        if (socketRef.current) {
+          socketRef.current.emit('admin-audio-signal', { targetId, signal: sig });
+        } else {
+          console.error('Socket not available for admin audio signal');
+        }
       });
       
       peer.on('stream', (remoteStream) => {
-        console.log('Admin received user audio stream');
+        console.log('Admin received user audio stream from:', targetId);
         const audio = document.createElement('audio');
         audio.srcObject = remoteStream;
         audio.autoplay = true;
@@ -341,13 +379,25 @@ export default function App() {
       });
       
       peer.on('error', (err) => {
-        console.error('Admin audio peer error:', err);
+        console.error('Admin audio peer error for', targetId, ':', err);
+        // Clean up on error
+        if (peersRef.current.has(targetId)) {
+          peersRef.current.delete(targetId);
+        }
+      });
+      
+      peer.on('close', () => {
+        console.log('Admin audio peer closed:', targetId);
+        peersRef.current.delete(targetId);
       });
       
       peersRef.current.set(targetId, peer);
+      console.log('Admin peer created and stored for:', targetId);
     } else if (!isAdminReceiving && role === 'user') {
+      console.log('User: Creating peer to send audio to admin:', targetId);
       // User sending to admin - create peer with mic stream
       ensureMic().then(stream => {
+        console.log('User: Microphone stream ready, creating peer');
         const peer = new Peer({ 
           initiator: true, 
           trickle: false,
@@ -361,24 +411,48 @@ export default function App() {
         });
         
         peer.on('signal', (sig) => {
-          console.log('User sending audio signal to admin');
-          socketRef.current.emit('audio-signal', { targetId, signal: sig });
+          console.log('User sending audio signal to admin:', targetId);
+          if (socketRef.current) {
+            socketRef.current.emit('audio-signal', { targetId, signal: sig });
+          } else {
+            console.error('Socket not available for user audio signal');
+          }
         });
         
         peer.on('error', (err) => {
-          console.error('User audio peer error:', err);
+          console.error('User audio peer error for', targetId, ':', err);
+          // Clean up on error
+          if (peersRef.current.has(targetId)) {
+            peersRef.current.delete(targetId);
+          }
+        });
+        
+        peer.on('close', () => {
+          console.log('User audio peer closed:', targetId);
+          peersRef.current.delete(targetId);
         });
         
         peersRef.current.set(targetId, peer);
+        console.log('User peer created and stored for:', targetId);
+      }).catch(err => {
+        console.error('Failed to get microphone for audio connection:', err);
       });
+    } else {
+      console.log('No audio connection needed:', { isAdminReceiving, role });
     }
   }
   
   function handleAudioSignal(fromId, signal) {
     console.log('Handling audio signal from:', fromId);
     const peer = peersRef.current.get(fromId);
-    if (peer) {
-      peer.signal(signal);
+    if (peer && typeof peer.signal === 'function') {
+      try {
+        peer.signal(signal);
+      } catch (err) {
+        console.error('Error signaling peer:', err);
+      }
+    } else {
+      console.warn('Peer not found or not ready for signaling:', fromId);
     }
   }
   
@@ -550,7 +624,10 @@ export default function App() {
       // Establish audio connections for existing participants
       if (role === 'user' && aid) {
         console.log('User: establishing audio connection to admin:', aid);
-        establishAudioConnection(aid, false); // user sending to admin
+        // Wait a bit for socket to be ready
+        setTimeout(() => {
+          establishAudioConnection(aid, false); // user sending to admin
+        }, 1000);
       } else if (role === 'admin') {
         console.log('Admin: ready to receive audio from users');
         // Admin doesn't need to establish connections here, will be done in participant-joined
