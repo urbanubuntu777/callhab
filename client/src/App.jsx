@@ -1,6 +1,29 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import io from 'socket.io-client';
-import Peer from 'simple-peer';
+
+// Dynamic import for simple-peer to avoid module loading issues
+let Peer = null;
+const loadPeer = async () => {
+  if (!Peer) {
+    try {
+      const simplePeer = await import('simple-peer');
+      Peer = simplePeer.default || simplePeer;
+      console.log('Simple-peer loaded successfully:', Peer);
+    } catch (err) {
+      console.error('Failed to load simple-peer:', err);
+    }
+  }
+  return Peer;
+};
+
+// Helper function to create Peer instances safely
+const createPeer = async (config) => {
+  const PeerConstructor = await loadPeer();
+  if (!PeerConstructor || typeof PeerConstructor !== 'function') {
+    throw new Error('Peer constructor not available');
+  }
+  return new PeerConstructor(config);
+};
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host;
 
@@ -131,17 +154,24 @@ export default function App() {
             const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
             
             // Create peer connection to send screen to admin
-            const peer = new Peer({ 
-              initiator: true, 
-              trickle: false, 
-              stream,
-              config: {
-                iceServers: [
-                  { urls: 'stun:stun.l.google.com:19302' },
-                  { urls: 'stun:stun1.l.google.com:19302' }
-                ]
-              }
-            });
+            let peer;
+            try {
+              peer = await createPeer({ 
+                initiator: true, 
+                trickle: false, 
+                stream,
+                config: {
+                  iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                  ]
+                }
+              });
+            } catch (err) {
+              console.error('Failed to create user screen share peer:', err);
+              alert('Не удалось создать соединение для демонстрации экрана: ' + err.message);
+              return;
+            }
             
             peer.on('signal', (sig) => {
               console.log('User sending screen share signal to admin');
@@ -191,21 +221,26 @@ export default function App() {
       }
     });
     
-    s.on('user-screen-signal', ({ from, signal }) => {
+    s.on('user-screen-signal', async ({ from, signal }) => {
       console.log('Admin received user screen signal from:', from);
       if (role === 'admin') {
         let peer = peersRef.current.get(`screen-${from}`);
         if (!peer) {
-          peer = new Peer({ 
-            initiator: false, 
-            trickle: false,
-            config: {
-              iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-              ]
-            }
-          });
+          try {
+            peer = await createPeer({ 
+              initiator: false, 
+              trickle: false,
+              config: {
+                iceServers: [
+                  { urls: 'stun:stun.l.google.com:19302' },
+                  { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+              }
+            });
+          } catch (err) {
+            console.error('Failed to create admin screen peer:', err);
+            return;
+          }
           
           peer.on('signal', (sig) => {
             console.log('Admin responding to user screen signal');
@@ -333,75 +368,16 @@ export default function App() {
   }
 
   // Simplified audio handling with better error checking
-  function establishAudioConnection(targetId, isAdminReceiving) {
+  async function establishAudioConnection(targetId, isAdminReceiving) {
     console.log('Establishing audio connection:', { targetId, isAdminReceiving, role, socketConnected: !!socketRef.current });
     
     if (isAdminReceiving && role === 'admin') {
       console.log('Admin: Creating peer to receive audio from user:', targetId);
       // Admin receiving from user - create peer without stream
-      const peer = new Peer({ 
-        initiator: false, 
-        trickle: false,
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
-        }
-      });
-      
-      peer.on('signal', (sig) => {
-        console.log('Admin responding to user audio signal for:', targetId);
-        if (socketRef.current) {
-          socketRef.current.emit('admin-audio-signal', { targetId, signal: sig });
-        } else {
-          console.error('Socket not available for admin audio signal');
-        }
-      });
-      
-      peer.on('stream', (remoteStream) => {
-        console.log('Admin received user audio stream from:', targetId);
-        const audio = document.createElement('audio');
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.volume = 1.0;
-        audio.style.display = 'none';
-        audio.id = `audio-${targetId}`;
-        document.body.appendChild(audio);
-        
-        audio.onloadedmetadata = () => {
-          console.log('✅ Admin now hearing user audio from:', targetId);
-          audio.play().catch(err => console.error('Failed to play audio:', err));
-        };
-        
-        if (!window.adminAudioElements) window.adminAudioElements = [];
-        window.adminAudioElements.push(audio);
-      });
-      
-      peer.on('error', (err) => {
-        console.error('Admin audio peer error for', targetId, ':', err);
-        // Clean up on error
-        if (peersRef.current.has(targetId)) {
-          peersRef.current.delete(targetId);
-        }
-      });
-      
-      peer.on('close', () => {
-        console.log('Admin audio peer closed:', targetId);
-        peersRef.current.delete(targetId);
-      });
-      
-      peersRef.current.set(targetId, peer);
-      console.log('Admin peer created and stored for:', targetId);
-    } else if (!isAdminReceiving && role === 'user') {
-      console.log('User: Creating peer to send audio to admin:', targetId);
-      // User sending to admin - create peer with mic stream
-      ensureMic().then(stream => {
-        console.log('User: Microphone stream ready, creating peer');
-        const peer = new Peer({ 
-          initiator: true, 
+      try {
+        const peer = await createPeer({ 
+          initiator: false, 
           trickle: false,
-          stream,
           config: {
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
@@ -411,16 +387,35 @@ export default function App() {
         });
         
         peer.on('signal', (sig) => {
-          console.log('User sending audio signal to admin:', targetId);
+          console.log('Admin responding to user audio signal for:', targetId);
           if (socketRef.current) {
-            socketRef.current.emit('audio-signal', { targetId, signal: sig });
+            socketRef.current.emit('admin-audio-signal', { targetId, signal: sig });
           } else {
-            console.error('Socket not available for user audio signal');
+            console.error('Socket not available for admin audio signal');
           }
         });
         
+        peer.on('stream', (remoteStream) => {
+          console.log('Admin received user audio stream from:', targetId);
+          const audio = document.createElement('audio');
+          audio.srcObject = remoteStream;
+          audio.autoplay = true;
+          audio.volume = 1.0;
+          audio.style.display = 'none';
+          audio.id = `audio-${targetId}`;
+          document.body.appendChild(audio);
+          
+          audio.onloadedmetadata = () => {
+            console.log('✅ Admin now hearing user audio from:', targetId);
+            audio.play().catch(err => console.error('Failed to play audio:', err));
+          };
+          
+          if (!window.adminAudioElements) window.adminAudioElements = [];
+          window.adminAudioElements.push(audio);
+        });
+        
         peer.on('error', (err) => {
-          console.error('User audio peer error for', targetId, ':', err);
+          console.error('Admin audio peer error for', targetId, ':', err);
           // Clean up on error
           if (peersRef.current.has(targetId)) {
             peersRef.current.delete(targetId);
@@ -428,12 +423,60 @@ export default function App() {
         });
         
         peer.on('close', () => {
-          console.log('User audio peer closed:', targetId);
+          console.log('Admin audio peer closed:', targetId);
           peersRef.current.delete(targetId);
         });
         
         peersRef.current.set(targetId, peer);
-        console.log('User peer created and stored for:', targetId);
+        console.log('Admin peer created and stored for:', targetId);
+      } catch (err) {
+        console.error('Failed to create admin peer:', err);
+      }
+    } else if (!isAdminReceiving && role === 'user') {
+      console.log('User: Creating peer to send audio to admin:', targetId);
+      // User sending to admin - create peer with mic stream
+      ensureMic().then(async stream => {
+        console.log('User: Microphone stream ready, creating peer');
+        try {
+          const peer = await createPeer({ 
+            initiator: true, 
+            trickle: false,
+            stream,
+            config: {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+              ]
+            }
+          });
+          
+          peer.on('signal', (sig) => {
+            console.log('User sending audio signal to admin:', targetId);
+            if (socketRef.current) {
+              socketRef.current.emit('audio-signal', { targetId, signal: sig });
+            } else {
+              console.error('Socket not available for user audio signal');
+            }
+          });
+          
+          peer.on('error', (err) => {
+            console.error('User audio peer error for', targetId, ':', err);
+            // Clean up on error
+            if (peersRef.current.has(targetId)) {
+              peersRef.current.delete(targetId);
+            }
+          });
+          
+          peer.on('close', () => {
+            console.log('User audio peer closed:', targetId);
+            peersRef.current.delete(targetId);
+          });
+          
+          peersRef.current.set(targetId, peer);
+          console.log('User peer created and stored for:', targetId);
+        } catch (err) {
+          console.error('Failed to create user peer:', err);
+        }
       }).catch(err => {
         console.error('Failed to get microphone for audio connection:', err);
       });
@@ -456,7 +499,7 @@ export default function App() {
     }
   }
   
-  function handleSignal(fromId, signal, adminToUser, channel = 'audio') {
+  async function handleSignal(fromId, signal, adminToUser, channel = 'audio') {
     console.log('Handling signal:', { fromId, channel, role, adminToUser });
     
     let peer = peersRef.current.get(fromId);
@@ -472,17 +515,22 @@ export default function App() {
       
       console.log('Creating new peer for:', fromId, 'with stream:', !!stream, 'role:', role);
       
-      peer = new Peer({ 
-        initiator, 
-        trickle: false, 
-        stream: stream,
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
-        }
-      });
+      try {
+        peer = await createPeer({ 
+          initiator, 
+          trickle: false, 
+          stream: stream,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+          }
+        });
+      } catch (err) {
+        console.error('Failed to create peer in handleSignal:', err);
+        return;
+      }
       
       peer.on('signal', (sig) => {
         console.log('Peer signaling back to:', fromId, 'channel:', channel);
@@ -546,10 +594,14 @@ export default function App() {
       }
       
       // broadcast offer to all users
-      const peer = new Peer({ initiator: true, trickle: false, stream });
-      peer.on('signal', (sig) => socketRef.current.emit('screen-share-signal', { signal: sig }));
-      peer.on('close', () => peer.destroy());
-      peer.on('error', () => peer.destroy());
+      try {
+        const peer = await createPeer({ initiator: true, trickle: false, stream });
+        peer.on('signal', (sig) => socketRef.current.emit('screen-share-signal', { signal: sig }));
+        peer.on('close', () => peer.destroy());
+        peer.on('error', () => peer.destroy());
+      } catch (err) {
+        console.error('Failed to create screen share peer:', err);
+      }
       
       // Handle user screen share requests
       stream.getVideoTracks()[0].onended = () => {
@@ -573,10 +625,14 @@ export default function App() {
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
     adminCamStreamRef.current = stream;
     setIsCamOn(true);
-    const peer = new Peer({ initiator: true, trickle: false, stream });
-    peer.on('signal', (sig) => socketRef.current.emit('video-signal', { signal: sig }));
-    peer.on('close', () => peer.destroy());
-    peer.on('error', () => peer.destroy());
+    try {
+      const peer = await createPeer({ initiator: true, trickle: false, stream });
+      peer.on('signal', (sig) => socketRef.current.emit('video-signal', { signal: sig }));
+      peer.on('close', () => peer.destroy());
+      peer.on('error', () => peer.destroy());
+    } catch (err) {
+      console.error('Failed to create camera peer:', err);
+    }
   }
 
   function stopCamera() {
