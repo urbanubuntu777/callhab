@@ -129,6 +129,8 @@ export function AppProvider({ children }: { children: any }) {
     if (!socketRef.current) {
       console.log('Connecting to server:', SERVER_URL);
       socketRef.current = io(SERVER_URL, { transports: ['websocket'] });
+      // Make socket available globally for VideoService
+      (window as any).socketRef = socketRef;
     }
 
     const socket = socketRef.current;
@@ -231,6 +233,19 @@ export function AppProvider({ children }: { children: any }) {
       }
     });
 
+    // Handle screen share stop from user
+    socket.on('user-screen-share-stopped', ({ from }) => {
+      console.log('User stopped screen share:', from);
+      if (state.user.role === 'admin') {
+        dispatch({ type: 'SET_USER', payload: { isScreenSharing: false } });
+        dispatch({
+          type: 'UPDATE_PARTICIPANT',
+          payload: { socketId: from, updates: { isScreenSharing: false } }
+        });
+        videoService.stopRemoteVideo();
+      }
+    });
+
     socket.on('user-screen-share-started', ({ from }) => {
       console.log('User started screen share:', from);
       if (state.user.role === 'admin') {
@@ -247,6 +262,10 @@ export function AppProvider({ children }: { children: any }) {
       console.log('User stopped screen share:', from);
       if (state.user.role === 'admin') {
         dispatch({ type: 'SET_USER', payload: { isScreenSharing: false } });
+        dispatch({
+          type: 'UPDATE_PARTICIPANT',
+          payload: { socketId: from, updates: { isScreenSharing: false } }
+        });
         videoService.stopRemoteVideo();
       }
     });
@@ -256,6 +275,10 @@ export function AppProvider({ children }: { children: any }) {
       if (state.user.role === 'admin') {
         alert('Пользователь отклонил демонстрацию экрана');
         dispatch({ type: 'SET_USER', payload: { isScreenSharing: false } });
+        dispatch({
+          type: 'UPDATE_PARTICIPANT',
+          payload: { socketId: from, updates: { isScreenSharing: false } }
+        });
       }
     });
 
@@ -301,14 +324,21 @@ export function AppProvider({ children }: { children: any }) {
         });
         
         connection.on('stream', (stream) => {
-          console.log(`Received ${type} stream from:`, from);
+          console.log(`Received ${type} stream from:`, from, stream);
           if (type === 'audio') {
             audioService.playRemoteAudio(stream, from);
           } else if (type === 'screen') {
             console.log('Playing screen share video:', stream);
             videoService.playRemoteVideo(stream);
-            // Update UI to show screen sharing
-            dispatch({ type: 'SET_USER', payload: { isScreenSharing: true } });
+            // Update participant to show screen sharing
+            dispatch({
+              type: 'UPDATE_PARTICIPANT',
+              payload: { socketId: from, updates: { isScreenSharing: true } }
+            });
+            // Update admin UI to show screen sharing
+            if (state.user.role === 'admin') {
+              dispatch({ type: 'SET_USER', payload: { isScreenSharing: true } });
+            }
           }
         });
         
@@ -356,15 +386,20 @@ export function AppProvider({ children }: { children: any }) {
       
       console.log('Joined successfully:', { participants, adminId });
       
-      // Set initial mic state based on actual audio service state
-      const initialMicState = audioService.getMuteState();
+      // Set initial mic state - users start with mic on, admin with mic off
+      const initialMicOn = role === 'user';
+      if (role === 'admin') {
+        audioService.setMute(true); // Admin starts muted
+      } else {
+        audioService.setMute(false); // Users start unmuted
+      }
       
       dispatch({
         type: 'SET_USER',
         payload: {
           userName,
           role,
-          isMicOn: !initialMicState
+          isMicOn: initialMicOn
         }
       });
       
@@ -447,17 +482,23 @@ export function AppProvider({ children }: { children: any }) {
 
   const toggleMic = useCallback(() => {
     const currentMuteState = audioService.getMuteState();
-    audioService.setMute(!currentMuteState);
-    const newMuteState = audioService.getMuteState();
+    const newMuteState = !currentMuteState;
+    
+    console.log('Toggling mic:', { currentMuteState, newMuteState });
+    
+    // Set the mute state in audio service
+    audioService.setMute(newMuteState);
+    
+    // Update UI state
     const isMicOn = !newMuteState;
-    
-    console.log('Toggling mic:', { currentMuteState, newMuteState, isMicOn });
-    
     dispatch({ type: 'SET_USER', payload: { isMicOn } });
     
+    // Emit to server
     if (socketRef.current) {
       socketRef.current.emit('admin-toggle-own-mic', { enabled: isMicOn });
     }
+    
+    console.log('Mic toggled successfully:', { isMicOn, muted: newMuteState });
   }, []);
 
   const toggleVideo = useCallback(async () => {

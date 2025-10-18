@@ -58,6 +58,10 @@ class VideoServiceImpl implements VideoService {
       this.screenStream.getVideoTracks()[0].onended = () => {
         console.log('Screen share ended by user');
         this.stopScreenShare();
+        // Emit to server that screen share stopped
+        if ((window as any).socketRef && (window as any).socketRef.current) {
+          (window as any).socketRef.current.emit('user-screen-share-stopped');
+        }
       };
 
       return this.screenStream;
@@ -108,18 +112,24 @@ class VideoServiceImpl implements VideoService {
       videoElement.id = 'main-video';
       videoElement.autoplay = true;
       videoElement.playsInline = true;
+      videoElement.muted = false; // Unmute for screen share
       videoElement.style.width = '100%';
       videoElement.style.height = '100%';
       videoElement.style.objectFit = 'cover';
+      videoElement.style.backgroundColor = '#000';
       
       const container = document.querySelector('.video-container');
       if (container) {
+        // Clear existing content
+        container.innerHTML = '';
         container.appendChild(videoElement);
       }
     }
     
     videoElement.srcObject = stream;
-    videoElement.play().catch(err => {
+    videoElement.play().then(() => {
+      console.log('Video playing successfully');
+    }).catch(err => {
       console.error('Failed to play video:', err);
     });
     
