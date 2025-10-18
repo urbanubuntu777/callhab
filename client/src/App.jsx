@@ -1,25 +1,158 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import io from 'socket.io-client';
-import Peer from 'simple-peer';
 
-// Check if Peer is available
-console.log('Peer imported:', Peer, 'Type:', typeof Peer);
+// Custom WebRTC implementation without simple-peer dependency
+class CustomPeer {
+  constructor(config) {
+    this.config = config;
+    this.pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    });
+    
+    this.initiator = config.initiator || false;
+    this.stream = config.stream || null;
+    this.trickle = config.trickle !== false;
+    
+    this.setupEventHandlers();
+    
+    if (this.stream) {
+      this.addStream(this.stream);
+    }
+  }
+  
+  setupEventHandlers() {
+    this.pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('ICE candidate generated:', event.candidate.type);
+        if (this.trickle) {
+          this.emit('signal', {
+            type: 'candidate',
+            candidate: event.candidate
+          });
+        }
+      } else {
+        console.log('ICE gathering complete');
+      }
+    };
+    
+    this.pc.oniceconnectionstatechange = () => {
+      console.log('ICE connection state:', this.pc.iceConnectionState);
+      if (this.pc.iceConnectionState === 'connected') {
+        this.emit('connect');
+      } else if (this.pc.iceConnectionState === 'failed' || 
+                 this.pc.iceConnectionState === 'disconnected' ||
+                 this.pc.iceConnectionState === 'closed') {
+        this.emit('close');
+      }
+    };
+    
+    this.pc.ontrack = (event) => {
+      console.log('Received remote stream');
+      this.emit('stream', event.streams[0]);
+    };
+    
+    this.pc.onerror = (error) => {
+      console.error('WebRTC error:', error);
+      this.emit('error', error);
+    };
+  }
+  
+  addStream(stream) {
+    if (this.pc && stream) {
+      stream.getTracks().forEach(track => {
+        this.pc.addTrack(track, stream);
+      });
+    }
+  }
+  
+  async signal(data) {
+    try {
+      console.log('Handling signal:', data.type);
+      
+      if (data.type === 'offer') {
+        await this.pc.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await this.pc.createAnswer();
+        await this.pc.setLocalDescription(answer);
+        this.emit('signal', answer);
+      } else if (data.type === 'answer') {
+        await this.pc.setRemoteDescription(new RTCSessionDescription(data));
+      } else if (data.type === 'candidate') {
+        if (data.candidate) {
+          await this.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+      } else {
+        // Handle simple-peer format signals
+        if (data.sdp) {
+          if (data.type === 'offer') {
+            await this.pc.setRemoteDescription(new RTCSessionDescription(data));
+            const answer = await this.pc.createAnswer();
+            await this.pc.setLocalDescription(answer);
+            this.emit('signal', answer);
+          } else if (data.type === 'answer') {
+            await this.pc.setRemoteDescription(new RTCSessionDescription(data));
+          }
+        } else if (data.candidate) {
+          await this.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+      }
+    } catch (error) {
+      console.error('Error handling signal:', error);
+      this.emit('error', error);
+    }
+  }
+  
+  async createOffer() {
+    if (this.initiator) {
+      try {
+        const offer = await this.pc.createOffer();
+        await this.pc.setLocalDescription(offer);
+        this.emit('signal', offer);
+      } catch (error) {
+        console.error('Error creating offer:', error);
+        this.emit('error', error);
+      }
+    }
+  }
+  
+  emit(event, data) {
+    if (this.listeners && this.listeners[event]) {
+      this.listeners[event].forEach(callback => callback(data));
+    }
+  }
+  
+  on(event, callback) {
+    if (!this.listeners) this.listeners = {};
+    if (!this.listeners[event]) this.listeners[event] = [];
+    this.listeners[event].push(callback);
+  }
+  
+  destroy() {
+    if (this.pc) {
+      this.pc.close();
+      this.pc = null;
+    }
+  }
+}
 
 // Helper function to create Peer instances safely
 const createPeer = async (config) => {
-  console.log('Creating peer with config:', config);
+  console.log('Creating custom peer with config:', config);
   
-  if (!PeerConstructor || typeof PeerConstructor !== 'function') {
-    throw new Error('Peer constructor not available: ' + typeof PeerConstructor);
-  }
-  
-  console.log('Creating new Peer instance...');
   try {
-    const peer = new PeerConstructor(config);
-    console.log('Peer created successfully:', peer);
+    const peer = new CustomPeer(config);
+    console.log('Custom peer created successfully:', peer);
+    
+    // Start the connection process if initiator
+    if (config.initiator) {
+      setTimeout(() => peer.createOffer(), 100);
+    }
+    
     return peer;
   } catch (err) {
-    console.error('Failed to create Peer instance:', err);
+    console.error('Failed to create custom peer:', err);
     throw err;
   }
 };
