@@ -2,9 +2,17 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
+
+// Serve static files from the React app build directory
+app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -54,14 +62,16 @@ io.on('connection', (socket) => {
         room.adminId = socket.id;
       }
 
-      room.participants.set(socket.id, { name: userName, role: userRole });
+      // Users have mic on by default, admin has mic off by default
+      const isMicOn = userRole === 'user';
+      room.participants.set(socket.id, { name: userName, role: userRole, isMicOn });
       socket.join(roomId);
       joinedRoomId = roomId;
       role = userRole;
       name = userName;
 
       // notify others
-      socket.to(roomId).emit('participant-joined', { socketId: socket.id, name, role });
+      socket.to(roomId).emit('participant-joined', { socketId: socket.id, name, role, isMicOn });
 
       // send existing participants list
       const participants = Array.from(room.participants.entries()).map(([id, info]) => ({ socketId: id, ...info }));
@@ -112,6 +122,27 @@ io.on('connection', (socket) => {
     io.to(targetId).emit('admin-audio-signal', { from: socket.id, signal });
   });
 
+  // admin requests user to start screen share
+  socket.on('admin-request-screen-share', ({ targetId }) => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    if (room?.adminId !== socket.id) return;
+    io.to(targetId).emit('admin-request-screen-share');
+  });
+
+  // user starts screen share (admin can see it)
+  socket.on('user-start-screen-share', ({ stream }) => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    const participant = room?.participants.get(socket.id);
+    if (!participant || participant.role !== 'user') return;
+    
+    // Send to admin
+    if (room.adminId) {
+      io.to(room.adminId).emit('user-screen-share-started', { from: socket.id });
+    }
+  });
+
   // screen share signalling (admin only)
   socket.on('screen-share-signal', ({ targetId, signal }) => {
     if (!joinedRoomId) return;
@@ -148,7 +179,29 @@ io.on('connection', (socket) => {
     if (!joinedRoomId) return;
     const room = rooms.get(joinedRoomId);
     if (room?.adminId !== socket.id) return;
+    
+    // Update participant state on server
+    const participant = room.participants.get(targetId);
+    if (participant) {
+      participant.isMicOn = !mute;
+      // Notify all participants about mic state change
+      io.to(joinedRoomId).emit('participant-mic-changed', { socketId: targetId, isMicOn: !mute });
+    }
+    
     io.to(targetId).emit('admin-toggle-user-mic', { mute: !!mute });
+  });
+
+  // admin toggles own mic
+  socket.on('admin-toggle-own-mic', ({ enabled }) => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    if (room?.adminId !== socket.id) return;
+    
+    const participant = room.participants.get(socket.id);
+    if (participant) {
+      participant.isMicOn = enabled;
+      io.to(joinedRoomId).emit('participant-mic-changed', { socketId: socket.id, isMicOn: enabled });
+    }
   });
 
   // request list of participants
@@ -160,8 +213,9 @@ io.on('connection', (socket) => {
   });
 });
 
-app.get('/', (req, res) => {
-  res.send('CallHub signaling server running');
+// Handle React routing, return all requests to React app
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 server.listen(PORT, () => {

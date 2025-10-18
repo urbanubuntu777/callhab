@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import Peer from 'simple-peer';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin.replace(/:\\d+$/, ':5000');
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host;
 
 function randomRoomId() {
   return Math.random().toString(36).slice(2, 8);
@@ -17,7 +17,7 @@ export default function App() {
   const [adminId, setAdminId] = useState(null);
   const [chatOpen, setChatOpen] = useState(true);
   const [messages, setMessages] = useState([]);
-  const [isMicOn, setIsMicOn] = useState(true);
+  const [isMicOn, setIsMicOn] = useState(false); // Default off for admin, will be set for user
   const [isCamOn, setIsCamOn] = useState(false);
   const [isShareOn, setIsShareOn] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -42,17 +42,33 @@ export default function App() {
 
   useEffect(() => {
     if (!socketRef.current) {
+      console.log('Connecting to server:', SERVER_URL);
       socketRef.current = io(SERVER_URL, { transports: ['websocket'] });
     }
     const s = socketRef.current;
-    s.on('connect', () => setConnected(true));
-    s.on('disconnect', () => setConnected(false));
+    s.on('connect', () => {
+      console.log('Connected to server');
+      setConnected(true);
+    });
+    s.on('disconnect', () => {
+      console.log('Disconnected from server');
+      setConnected(false);
+    });
+    s.on('connect_error', (err) => {
+      console.error('Connection error:', err);
+    });
 
-    s.on('participant-joined', ({ socketId, name, role }) => {
+    s.on('participant-joined', ({ socketId, name, role, isMicOn: micState }) => {
+      console.log('Participant joined:', { socketId, name, role, isMicOn: micState });
       setParticipants((prev) => {
         if (prev.some((p) => p.socketId === socketId)) return prev;
-        return [...prev, { socketId, name, role }];
+        return [...prev, { socketId, name, role, isMicOn: micState }];
       });
+      
+      // If user joins and admin is present, establish audio connection
+      if (role === 'user' && socketId !== socketRef.current.id && role === 'admin') {
+        console.log('Admin: new user joined, waiting for audio signal');
+      }
     });
     s.on('participant-left', ({ socketId }) => {
       setParticipants((prev) => prev.filter((p) => p.socketId !== socketId));
@@ -69,19 +85,63 @@ export default function App() {
         setIsMicOn(!mute);
       }
     });
+    
+    s.on('participant-mic-changed', ({ socketId, isMicOn: micState }) => {
+      console.log('Participant mic changed:', socketId, micState);
+      setParticipants((prev) => prev.map((p) => 
+        p.socketId === socketId ? { ...p, isMicOn: micState } : p
+      ));
+    });
 
     // Signaling handlers: audio channel user<->admin
     s.on('audio-signal', ({ from, signal }) => {
-      handleSignal(from, signal, false);
+      console.log('Admin received audio signal from:', from);
+      if (role === 'admin') {
+        handleSignal(from, signal, false, 'audio');
+      }
     });
     s.on('admin-audio-signal', ({ from, signal }) => {
-      handleSignal(from, signal, true);
+      console.log('User received admin audio signal from:', from);
+      if (role === 'user') {
+        handleSignal(from, signal, true, 'audio');
+      }
     });
     s.on('screen-share-signal', ({ from, signal }) => {
       handleSignal(from, signal, false, 'screen');
     });
     s.on('video-signal', ({ from, signal }) => {
       handleSignal(from, signal, false, 'camera');
+    });
+    
+    // Screen share events
+    s.on('admin-request-screen-share', async () => {
+      if (role === 'user') {
+        // Show notification to user
+        const confirmed = confirm('Админ запрашивает демонстрацию вашего экрана. Разрешить?');
+        if (confirmed) {
+          try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+            socketRef.current.emit('user-start-screen-share');
+            // Show user's screen in center
+            if (centerVideoRef.current) {
+              centerVideoRef.current.srcObject = stream;
+              centerVideoRef.current.play().catch(() => {});
+            }
+            alert('Демонстрация экрана начата');
+          } catch (err) {
+            console.error('User screen share failed:', err);
+            alert('Не удалось начать демонстрацию экрана');
+          }
+        } else {
+          alert('Демонстрация экрана отклонена');
+        }
+      }
+    });
+    
+    s.on('user-screen-share-started', ({ from }) => {
+      if (role === 'admin') {
+        console.log('User started screen share:', from);
+      }
     });
 
     return () => {
@@ -91,22 +151,74 @@ export default function App() {
 
   async function ensureMic() {
     if (localMicStreamRef.current) return localMicStreamRef.current;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    // users: mic on by default; admin: mic off by default
-    const shouldBeOn = role !== 'admin';
-    stream.getAudioTracks().forEach((t) => (t.enabled = shouldBeOn));
-    setIsMicOn(shouldBeOn);
-    localMicStreamRef.current = stream;
-    return stream;
+    
+    try {
+      console.log('Requesting microphone access...');
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }, 
+        video: false 
+      });
+      
+      console.log('Microphone access granted:', stream);
+      
+      // users: mic always on; admin: mic off by default
+      const shouldBeOn = role !== 'admin';
+      stream.getAudioTracks().forEach((t) => {
+        t.enabled = shouldBeOn;
+        console.log(`Audio track enabled: ${t.enabled}, role: ${role}`);
+      });
+      
+      setIsMicOn(shouldBeOn);
+      localMicStreamRef.current = stream;
+      
+      // Show notification for user
+      if (role === 'user') {
+        console.log('Микрофон включен для пользователя');
+      }
+      
+      return stream;
+    } catch (error) {
+      console.error('Failed to access microphone:', error);
+      alert('Не удалось получить доступ к микрофону. Проверьте разрешения браузера.');
+      throw error;
+    }
   }
 
   function handleSignal(fromId, signal, adminToUser, channel = 'audio') {
+    console.log('Handling signal:', { fromId, channel, role, adminToUser });
+    
     let peer = peersRef.current.get(fromId);
     if (!peer) {
       const initiator = false; // receiving side
-      const stream = selectLocalStreamForChannel(channel);
-      peer = new Peer({ initiator, trickle: false, stream });
+      let stream = undefined;
+      
+      // For admin receiving audio from user, we don't need to send our stream back
+      if (channel === 'audio' && role === 'admin') {
+        stream = undefined; // Admin just receives, doesn't send audio back
+      } else {
+        stream = selectLocalStreamForChannel(channel);
+      }
+      
+      console.log('Creating new peer for:', fromId, 'with stream:', !!stream, 'role:', role);
+      
+      peer = new Peer({ 
+        initiator, 
+        trickle: false, 
+        stream: stream,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
+        }
+      });
+      
       peer.on('signal', (sig) => {
+        console.log('Peer signaling back to:', fromId, 'channel:', channel);
         if (channel === 'audio') {
           if (role === 'admin') {
             socketRef.current.emit('admin-audio-signal', { targetId: fromId, signal: sig });
@@ -119,19 +231,62 @@ export default function App() {
           socketRef.current.emit('video-signal', { targetId: fromId, signal: sig });
         }
       });
+      
+      peer.on('connect', () => {
+        console.log('Peer connected:', fromId, 'channel:', channel);
+      });
+      
       peer.on('stream', (remoteStream) => {
-        // Center video shows admin stream (screen or camera) for users; admin hears users via audio tracks
-        if (channel === 'screen' || channel === 'camera' || role === 'user') {
+        console.log('Received stream from:', fromId, 'channel:', channel, 'stream:', remoteStream);
+        
+        // For audio: admin hears users
+        if (channel === 'audio' && role === 'admin') {
+          // Create audio element for admin to hear users
+          const audio = document.createElement('audio');
+          audio.srcObject = remoteStream;
+          audio.autoplay = true;
+          audio.volume = 1.0;
+          audio.style.display = 'none'; // Hide the audio element
+          audio.id = `audio-${fromId}`;
+          document.body.appendChild(audio);
+          
+          // Test if audio is working
+          audio.onloadedmetadata = () => {
+            console.log('Audio metadata loaded for:', fromId);
+            audio.play().then(() => {
+              console.log('✅ Admin now hearing user audio from:', fromId);
+            }).catch(err => {
+              console.error('❌ Failed to play audio:', err);
+            });
+          };
+          
+          // Store reference to remove later
+          if (!window.adminAudioElements) window.adminAudioElements = [];
+          window.adminAudioElements.push(audio);
+        }
+        // Center video shows admin stream (screen or camera) for users
+        else if ((channel === 'screen' || channel === 'camera') && role === 'user') {
           if (centerVideoRef.current) {
             centerVideoRef.current.srcObject = remoteStream;
             centerVideoRef.current.play().catch(() => {});
           }
         }
       });
-      peer.on('close', () => peer.destroy());
-      peer.on('error', () => peer.destroy());
+      
+      peer.on('close', () => {
+        console.log('Peer connection closed:', fromId);
+        peer.destroy();
+      });
+      
+      peer.on('error', (err) => {
+        console.error('Peer error:', err, 'from:', fromId);
+        peer.destroy();
+      });
+      
       peersRef.current.set(fromId, peer);
     }
+    
+    console.log('Sending signal to peer:', fromId);
     peer.signal(signal);
   }
 
@@ -143,14 +298,30 @@ export default function App() {
 
   async function startScreenShare() {
     if (role !== 'admin') return;
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-    adminScreenStreamRef.current = stream;
-    setIsShareOn(true);
-    // broadcast offer to all others
-    const peer = new Peer({ initiator: true, trickle: false, stream });
-    peer.on('signal', (sig) => socketRef.current.emit('screen-share-signal', { signal: sig }));
-    peer.on('close', () => peer.destroy());
-    peer.on('error', () => peer.destroy());
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      adminScreenStreamRef.current = stream;
+      setIsShareOn(true);
+      
+      // Show admin's screen in center video
+      if (centerVideoRef.current) {
+        centerVideoRef.current.srcObject = stream;
+        centerVideoRef.current.play().catch(() => {});
+      }
+      
+      // broadcast offer to all users
+      const peer = new Peer({ initiator: true, trickle: false, stream });
+      peer.on('signal', (sig) => socketRef.current.emit('screen-share-signal', { signal: sig }));
+      peer.on('close', () => peer.destroy());
+      peer.on('error', () => peer.destroy());
+      
+      // Handle user screen share requests
+      stream.getVideoTracks()[0].onended = () => {
+        stopScreenShare();
+      };
+    } catch (err) {
+      console.error('Screen share failed:', err);
+    }
   }
 
   function stopScreenShare() {
@@ -183,35 +354,78 @@ export default function App() {
   async function joinRoom() {
     setJoining(true);
     try {
+      console.log('Joining room:', { roomId, userName, role });
+      if (!socketRef.current || !connected) {
+        throw new Error('Не подключен к серверу');
+      }
+      
       // prepare mic stream
       await ensureMic();
       const s = socketRef.current;
+      
       const { ok, participants: list, adminId: aid, error } = await new Promise((resolve) => {
         s.emit('join-room', { roomId, userName, userRole: role }, resolve);
+        // timeout after 10 seconds
+        setTimeout(() => resolve({ ok: false, error: 'Timeout' }), 10000);
       });
+      
       if (!ok) throw new Error(error || 'join failed');
-      setParticipants(list);
+      console.log('Joined successfully:', { participants: list, adminId: aid });
+      
+      // Set initial mic state based on role
+      const initialMicState = role !== 'admin';
+      setIsMicOn(initialMicState);
+      
+      // Update participants with correct mic states
+      const updatedParticipants = list.map(p => ({
+        ...p,
+        isMicOn: p.role === 'user' ? true : p.isMicOn || false
+      }));
+      
+      setParticipants(updatedParticipants);
       setAdminId(aid || null);
 
-      // Establish audio channel: users connect to admin, admin connects to each user
+      // Establish audio channel: users connect to admin
       if (role === 'user' && aid) {
         const stream = await ensureMic();
-        const peer = new Peer({ initiator: true, trickle: false, stream });
-        peer.on('signal', (sig) => socketRef.current.emit('audio-signal', { targetId: aid, signal: sig }));
-        peer.on('close', () => peer.destroy());
-        peer.on('error', () => peer.destroy());
+        console.log('User creating peer connection to admin:', aid);
+        
+        const peer = new Peer({ 
+          initiator: true, 
+          trickle: false, 
+          stream,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+          }
+        });
+        
+        peer.on('signal', (sig) => {
+          console.log('User sending signal to admin:', aid);
+          socketRef.current.emit('audio-signal', { targetId: aid, signal: sig });
+        });
+        
+        peer.on('connect', () => {
+          console.log('User connected to admin via WebRTC');
+        });
+        
+        peer.on('close', () => {
+          console.log('User peer connection closed');
+          peer.destroy();
+        });
+        
+        peer.on('error', (err) => {
+          console.error('User peer error:', err);
+          peer.destroy();
+        });
+        
         peersRef.current.set(aid, peer);
       } else if (role === 'admin') {
-        // connect to each user for downstream admin->user audio if needed
-        for (const p of list) {
-          if (p.socketId === socketRef.current.id) continue;
-          const stream = await ensureMic();
-          const peer = new Peer({ initiator: true, trickle: false, stream });
-          peer.on('signal', (sig) => socketRef.current.emit('admin-audio-signal', { targetId: p.socketId, signal: sig }));
-          peer.on('close', () => peer.destroy());
-          peer.on('error', () => peer.destroy());
-          peersRef.current.set(p.socketId, peer);
-        }
+        // Admin waits for user connections
+        console.log('Admin ready to receive audio from users');
+        await ensureMic(); // Admin also needs mic stream for WebRTC
       }
     } catch (e) {
       // eslint-disable-next-line no-alert
@@ -231,6 +445,17 @@ export default function App() {
     }
     stopScreenShare();
     stopCamera();
+    
+    // Clean up admin audio elements
+    if (window.adminAudioElements) {
+      window.adminAudioElements.forEach(audio => {
+        audio.pause();
+        audio.srcObject = null;
+        if (audio.parentNode) audio.parentNode.removeChild(audio);
+      });
+      window.adminAudioElements = [];
+    }
+    
     setParticipants([]);
     setMessages([]);
   }
@@ -240,14 +465,32 @@ export default function App() {
   }
 
   function toggleMic() {
-    if (!localMicStreamRef.current) return;
+    if (role === 'user') return; // Users cannot toggle their own mic
+    if (!localMicStreamRef.current || !socketRef.current) return;
+    
     const next = !isMicOn;
     localMicStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = next));
     setIsMicOn(next);
+    socketRef.current.emit('admin-toggle-own-mic', { enabled: next });
+  }
+  
+  function toggleUserMic(targetId, mute) {
+    if (role !== 'admin' || !socketRef.current) return;
+    socketRef.current.emit('admin-toggle-user-mic', { targetId, mute });
+  }
+  
+  function requestUserScreenShare() {
+    if (role !== 'admin' || !socketRef.current) return;
+    // Request screen share from first user found
+    const user = participants.find(p => p.role === 'user');
+    if (user) {
+      socketRef.current.emit('admin-request-screen-share', { targetId: user.socketId });
+      setIsShareOn(true);
+    }
   }
 
   return (
-    <div className="app">
+    <div className={`app ${role === 'admin' ? 'admin' : ''}`}>
       {!participants.length ? (
         <div className="auth">
           <h1>CallHub</h1>
@@ -282,9 +525,18 @@ export default function App() {
                   <div className={`avatar ${p.role}`}>{p.name?.slice(0, 1).toUpperCase()}</div>
                   <div className="meta">
                     <div className="name">{p.name} {p.socketId === adminId ? '(Admin)' : ''}</div>
+                    <div className={`mic-status ${p.isMicOn ? 'on' : 'off'}`}>
+                      {p.isMicOn ? '🎙️ Включен' : '🔇 Выключен'}
+                    </div>
                   </div>
                   {role === 'admin' && p.socketId !== adminId && (
-                    <button className="micctl" onClick={() => socketRef.current.emit('admin-toggle-user-mic', { targetId: p.socketId, mute: true })}>🔇</button>
+                    <button 
+                      className="micctl" 
+                      onClick={() => toggleUserMic(p.socketId, p.isMicOn)}
+                      title={p.isMicOn ? 'Выключить микрофон' : 'Включить микрофон'}
+                    >
+                      {p.isMicOn ? '🔇' : '🎙️'}
+                    </button>
                   )}
                 </div>
               ))}
@@ -306,16 +558,38 @@ export default function App() {
             </aside>
           )}
           <footer className="bottom">
-            <button className={`ctl ${isMicOn ? 'active' : ''}`} onClick={toggleMic}>🎙️</button>
+            {role === 'admin' && (
+              <button 
+                className={`ctl ${isMicOn ? 'active' : ''}`} 
+                onClick={toggleMic}
+                title={isMicOn ? 'Выключить микрофон' : 'Включить микрофон'}
+              >
+                🎙️
+              </button>
+            )}
             {role === 'admin' && (
               <>
                 <button className={`ctl ${isCamOn ? 'active' : ''}`} onClick={() => (isCamOn ? stopCamera() : startCamera())}>🎥</button>
-                <button className={`ctl ${isShareOn ? 'active' : ''}`} onClick={() => (isShareOn ? stopScreenShare() : startScreenShare())}>🖥️</button>
+                <button className={`ctl ${isShareOn ? 'active' : ''}`} onClick={() => (isShareOn ? stopScreenShare() : requestUserScreenShare())}>🖥️</button>
               </>
             )}
             <button className={`ctl ${chatOpen ? 'active' : ''}`} onClick={() => setChatOpen((v) => !v)}>💬</button>
             <button className="ctl" onClick={leaveRoom}>🚪</button>
-            <button className="link" onClick={() => navigator.clipboard.writeText(inviteUrl)}>Скопировать ссылку</button>
+            {role === 'admin' && (
+              <>
+                <button className="link" onClick={() => navigator.clipboard.writeText(inviteUrl)}>Скопировать ссылку</button>
+                <button className="link" onClick={() => {
+                  console.log('Admin audio elements:', window.adminAudioElements);
+                  if (window.adminAudioElements) {
+                    window.adminAudioElements.forEach((audio, i) => {
+                      console.log(`Audio ${i}:`, audio.srcObject, 'volume:', audio.volume);
+                      audio.volume = 1.0;
+                      audio.play();
+                    });
+                  }
+                }}>🔊 Тест аудио</button>
+              </>
+            )}
           </footer>
         </div>
       )}
