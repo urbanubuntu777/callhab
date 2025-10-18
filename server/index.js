@@ -131,7 +131,7 @@ io.on('connection', (socket) => {
   });
 
   // user starts screen share (admin can see it)
-  socket.on('user-start-screen-share', ({ stream }) => {
+  socket.on('user-start-screen-share', () => {
     if (!joinedRoomId) return;
     const room = rooms.get(joinedRoomId);
     const participant = room?.participants.get(socket.id);
@@ -140,6 +140,40 @@ io.on('connection', (socket) => {
     // Send to admin
     if (room.adminId) {
       io.to(room.adminId).emit('user-screen-share-started', { from: socket.id });
+    }
+  });
+  
+  // user screen share signalling
+  socket.on('user-screen-signal', ({ signal }) => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    const participant = room?.participants.get(socket.id);
+    if (!participant || participant.role !== 'user') return;
+    
+    // Send to admin
+    if (room.adminId) {
+      io.to(room.adminId).emit('user-screen-signal', { from: socket.id, signal });
+    }
+  });
+  
+  // admin responds to user screen share
+  socket.on('admin-screen-signal', ({ targetId, signal }) => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    if (room?.adminId !== socket.id) return;
+    io.to(targetId).emit('admin-screen-signal', { signal });
+  });
+  
+  // user stops screen share
+  socket.on('user-stop-screen-share', () => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    const participant = room?.participants.get(socket.id);
+    if (!participant || participant.role !== 'user') return;
+    
+    // Notify admin
+    if (room.adminId) {
+      io.to(room.adminId).emit('user-stop-screen-share', { from: socket.id });
     }
   });
 

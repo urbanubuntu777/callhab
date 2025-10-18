@@ -58,17 +58,12 @@ export default function App() {
       console.error('Connection error:', err);
     });
 
-    s.on('participant-joined', ({ socketId, name, role, isMicOn: micState }) => {
-      console.log('Participant joined:', { socketId, name, role, isMicOn: micState });
+    s.on('participant-joined', ({ socketId, name, role: joinedRole, isMicOn: micState }) => {
+      console.log('Participant joined:', { socketId, name, role: joinedRole, isMicOn: micState });
       setParticipants((prev) => {
         if (prev.some((p) => p.socketId === socketId)) return prev;
-        return [...prev, { socketId, name, role, isMicOn: micState }];
+        return [...prev, { socketId, name, role: joinedRole, isMicOn: micState }];
       });
-      
-      // If user joins and admin is present, establish audio connection
-      if (role === 'user' && socketId !== socketRef.current.id && role === 'admin') {
-        console.log('Admin: new user joined, waiting for audio signal');
-      }
     });
     s.on('participant-left', ({ socketId }) => {
       setParticipants((prev) => prev.filter((p) => p.socketId !== socketId));
@@ -95,16 +90,12 @@ export default function App() {
 
     // Signaling handlers: audio channel user<->admin
     s.on('audio-signal', ({ from, signal }) => {
-      console.log('Admin received audio signal from:', from);
-      if (role === 'admin') {
-        handleSignal(from, signal, false, 'audio');
-      }
+      console.log('Received audio signal from:', from, 'my role:', role);
+      handleSignal(from, signal, false, 'audio');
     });
     s.on('admin-audio-signal', ({ from, signal }) => {
-      console.log('User received admin audio signal from:', from);
-      if (role === 'user') {
-        handleSignal(from, signal, true, 'audio');
-      }
+      console.log('Received admin audio signal from:', from, 'my role:', role);
+      handleSignal(from, signal, true, 'audio');
     });
     s.on('screen-share-signal', ({ from, signal }) => {
       handleSignal(from, signal, false, 'screen');
@@ -121,13 +112,43 @@ export default function App() {
         if (confirmed) {
           try {
             const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+            
+            // Create peer connection to send screen to admin
+            const peer = new Peer({ 
+              initiator: true, 
+              trickle: false, 
+              stream,
+              config: {
+                iceServers: [
+                  { urls: 'stun:stun.l.google.com:19302' },
+                  { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+              }
+            });
+            
+            peer.on('signal', (sig) => {
+              console.log('User sending screen share signal to admin');
+              socketRef.current.emit('user-screen-signal', { signal: sig });
+            });
+            
+            peer.on('error', (err) => {
+              console.error('Screen share peer error:', err);
+            });
+            
+            // Store peer reference
+            peersRef.current.set('user-screen-share', peer);
+            
+            // Notify admin that screen share started
             socketRef.current.emit('user-start-screen-share');
-            // Show user's screen in center
-            if (centerVideoRef.current) {
-              centerVideoRef.current.srcObject = stream;
-              centerVideoRef.current.play().catch(() => {});
-            }
+            
             alert('Демонстрация экрана начата');
+            
+            // Handle screen share stop
+            stream.getVideoTracks()[0].onended = () => {
+              peer.destroy();
+              peersRef.current.delete('user-screen-share');
+              socketRef.current.emit('user-stop-screen-share');
+            };
           } catch (err) {
             console.error('User screen share failed:', err);
             alert('Не удалось начать демонстрацию экрана');
@@ -139,8 +160,67 @@ export default function App() {
     });
     
     s.on('user-screen-share-started', ({ from }) => {
+      console.log('User started screen share:', from);
+    });
+    
+    s.on('user-screen-signal', ({ from, signal }) => {
+      console.log('Admin received user screen signal from:', from);
       if (role === 'admin') {
-        console.log('User started screen share:', from);
+        let peer = peersRef.current.get(`screen-${from}`);
+        if (!peer) {
+          peer = new Peer({ 
+            initiator: false, 
+            trickle: false,
+            config: {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+              ]
+            }
+          });
+          
+          peer.on('signal', (sig) => {
+            console.log('Admin responding to user screen signal');
+            socketRef.current.emit('admin-screen-signal', { targetId: from, signal: sig });
+          });
+          
+          peer.on('stream', (remoteStream) => {
+            console.log('Admin received user screen stream');
+            if (centerVideoRef.current) {
+              centerVideoRef.current.srcObject = remoteStream;
+              centerVideoRef.current.play().catch(() => {});
+            }
+          });
+          
+          peer.on('error', (err) => {
+            console.error('Admin screen peer error:', err);
+          });
+          
+          peersRef.current.set(`screen-${from}`, peer);
+        }
+        peer.signal(signal);
+      }
+    });
+    
+    s.on('admin-screen-signal', ({ signal }) => {
+      console.log('User received admin screen signal response');
+      const peer = peersRef.current.get('user-screen-share');
+      if (peer) {
+        peer.signal(signal);
+      }
+    });
+    
+    s.on('user-stop-screen-share', ({ from }) => {
+      console.log('User stopped screen share:', from);
+      if (role === 'admin') {
+        const peer = peersRef.current.get(`screen-${from}`);
+        if (peer) {
+          peer.destroy();
+          peersRef.current.delete(`screen-${from}`);
+        }
+        if (centerVideoRef.current) {
+          centerVideoRef.current.srcObject = null;
+        }
       }
     });
 
@@ -196,9 +276,17 @@ export default function App() {
       const initiator = false; // receiving side
       let stream = undefined;
       
-      // For admin receiving audio from user, we don't need to send our stream back
-      if (channel === 'audio' && role === 'admin') {
-        stream = undefined; // Admin just receives, doesn't send audio back
+      // For audio: admin receives from users, users receive from admin
+      if (channel === 'audio') {
+        if (role === 'admin' && !adminToUser) {
+          // Admin receiving from user - no stream needed
+          stream = undefined;
+        } else if (role === 'user' && adminToUser) {
+          // User receiving from admin - no stream needed
+          stream = undefined;
+        } else {
+          stream = selectLocalStreamForChannel(channel);
+        }
       } else {
         stream = selectLocalStreamForChannel(channel);
       }
