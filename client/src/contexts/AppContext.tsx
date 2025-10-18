@@ -235,6 +235,11 @@ export function AppProvider({ children }: { children: any }) {
       console.log('User started screen share:', from);
       if (state.user.role === 'admin') {
         dispatch({ type: 'SET_USER', payload: { isScreenSharing: true } });
+        // Update participant to show screen sharing
+        dispatch({
+          type: 'UPDATE_PARTICIPANT',
+          payload: { socketId: from, updates: { isScreenSharing: true } }
+        });
       }
     });
 
@@ -300,7 +305,10 @@ export function AppProvider({ children }: { children: any }) {
           if (type === 'audio') {
             audioService.playRemoteAudio(stream, from);
           } else if (type === 'screen') {
+            console.log('Playing screen share video:', stream);
             videoService.playRemoteVideo(stream);
+            // Update UI to show screen sharing
+            dispatch({ type: 'SET_USER', payload: { isScreenSharing: true } });
           }
         });
         

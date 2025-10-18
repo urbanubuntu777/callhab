@@ -99,13 +99,31 @@ class VideoServiceImpl implements VideoService {
   }
 
   public playRemoteVideo(stream: MediaStream): void {
-    if (this.videoElement) {
-      console.log('Playing remote video stream');
-      this.videoElement.srcObject = stream;
-      this.videoElement.play().catch(err => {
-        console.error('Failed to play video:', err);
-      });
+    console.log('Playing remote video stream:', stream);
+    
+    // Find or create video element
+    let videoElement = document.getElementById('main-video') as HTMLVideoElement;
+    if (!videoElement) {
+      videoElement = document.createElement('video');
+      videoElement.id = 'main-video';
+      videoElement.autoplay = true;
+      videoElement.playsInline = true;
+      videoElement.style.width = '100%';
+      videoElement.style.height = '100%';
+      videoElement.style.objectFit = 'cover';
+      
+      const container = document.querySelector('.video-container');
+      if (container) {
+        container.appendChild(videoElement);
+      }
     }
+    
+    videoElement.srcObject = stream;
+    videoElement.play().catch(err => {
+      console.error('Failed to play video:', err);
+    });
+    
+    this.videoElement = videoElement;
   }
 
   public stopRemoteVideo(): void {

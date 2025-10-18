@@ -3,6 +3,7 @@ import { useApp } from '../contexts/AppContext';
 import { ParticipantsList } from './ParticipantsList';
 import { Chat } from './Chat';
 import { Controls } from './Controls';
+import { VolumeControls } from './VolumeControls';
 
 function randomRoomId() {
   return Math.random().toString(36).slice(2, 8);
@@ -153,6 +154,7 @@ export function App() {
         
         {user.role === 'admin' && (
           <div className="admin-actions">
+            <VolumeControls />
             <button
               className="action-button"
               onClick={copyInviteLink}
