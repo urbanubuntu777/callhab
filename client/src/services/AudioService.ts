@@ -113,18 +113,40 @@ class AudioServiceImpl implements AudioService {
   }
 
   public setMute(muted: boolean): void {
+    console.log('Setting microphone mute state:', muted);
     if (this.stream) {
       this.stream.getAudioTracks().forEach(track => {
         track.enabled = !muted;
+        console.log(`Audio track ${track.id} enabled:`, !muted);
       });
       console.log('Microphone muted:', muted);
+    } else {
+      console.warn('No audio stream available to mute/unmute');
     }
   }
 
   public getMuteState(): boolean {
     if (!this.stream) return true;
     const audioTracks = this.stream.getAudioTracks();
-    return audioTracks.every(track => !track.enabled);
+    const isMuted = audioTracks.every(track => !track.enabled);
+    console.log('Current mute state:', isMuted);
+    return isMuted;
+  }
+
+  public getMicVolume(): number {
+    return 100; // Placeholder
+  }
+
+  public setMicVolume(volume: number): void {
+    // Placeholder for volume control
+  }
+
+  public getSpeakerVolume(): number {
+    return 100; // Placeholder
+  }
+
+  public setSpeakerVolume(volume: number): void {
+    // Placeholder for volume control
   }
 }
 

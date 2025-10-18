@@ -4,6 +4,7 @@ import { AppContextType, UserState, RoomState, ConnectionState, Participant, Cha
 import { webRTCService } from '../services/WebRTCService';
 import { audioService } from '../services/AudioService';
 import { videoService } from '../services/VideoService';
+import { screenShareService } from '../services/ScreenShareService';
 
 // Initial state
 const initialUserState: UserState = {
@@ -242,7 +243,7 @@ export function AppProvider({ children }: { children: any }) {
           type: 'UPDATE_PARTICIPANT',
           payload: { socketId: from, updates: { isScreenSharing: false } }
         });
-        videoService.stopRemoteVideo();
+        screenShareService.stopRemoteScreenShare();
       }
     });
 
@@ -266,7 +267,7 @@ export function AppProvider({ children }: { children: any }) {
           type: 'UPDATE_PARTICIPANT',
           payload: { socketId: from, updates: { isScreenSharing: false } }
         });
-        videoService.stopRemoteVideo();
+        screenShareService.stopRemoteScreenShare();
       }
     });
 
@@ -279,6 +280,7 @@ export function AppProvider({ children }: { children: any }) {
           type: 'UPDATE_PARTICIPANT',
           payload: { socketId: from, updates: { isScreenSharing: false } }
         });
+        screenShareService.stopRemoteScreenShare();
       }
     });
 
@@ -329,7 +331,7 @@ export function AppProvider({ children }: { children: any }) {
             audioService.playRemoteAudio(stream, from);
           } else if (type === 'screen') {
             console.log('Playing screen share video:', stream);
-            videoService.playRemoteVideo(stream);
+            screenShareService.playRemoteScreenShare(stream);
             // Update participant to show screen sharing
             dispatch({
               type: 'UPDATE_PARTICIPANT',
@@ -481,16 +483,25 @@ export function AppProvider({ children }: { children: any }) {
   }, []);
 
   const toggleMic = useCallback(() => {
+    console.log('=== MICROPHONE TOGGLE START ===');
+    
+    // Get current state from audio service
     const currentMuteState = audioService.getMuteState();
+    console.log('Current mute state from service:', currentMuteState);
+    
+    // Toggle the state
     const newMuteState = !currentMuteState;
+    console.log('New mute state:', newMuteState);
     
-    console.log('Toggling mic:', { currentMuteState, newMuteState });
-    
-    // Set the mute state in audio service
+    // Apply to audio service
     audioService.setMute(newMuteState);
     
+    // Verify the change
+    const actualMuteState = audioService.getMuteState();
+    console.log('Actual mute state after change:', actualMuteState);
+    
     // Update UI state
-    const isMicOn = !newMuteState;
+    const isMicOn = !actualMuteState;
     dispatch({ type: 'SET_USER', payload: { isMicOn } });
     
     // Emit to server
@@ -498,7 +509,7 @@ export function AppProvider({ children }: { children: any }) {
       socketRef.current.emit('admin-toggle-own-mic', { enabled: isMicOn });
     }
     
-    console.log('Mic toggled successfully:', { isMicOn, muted: newMuteState });
+    console.log('=== MICROPHONE TOGGLE END ===', { isMicOn, muted: actualMuteState });
   }, []);
 
   const toggleVideo = useCallback(async () => {
@@ -518,16 +529,45 @@ export function AppProvider({ children }: { children: any }) {
 
   const startScreenShare = useCallback(async () => {
     try {
-      await videoService.startScreenShare();
+      console.log('Starting screen share...');
+      const stream = await screenShareService.startScreenShare();
+      console.log('Screen share stream:', stream);
+      
+      // Create WebRTC connection for screen share
+      const connection = await webRTCService.createConnection({
+        initiator: true,
+        stream: stream
+      });
+      
+      connection.on('signal', (signal) => {
+        console.log('Sending screen share signal:', signal);
+        if (socketRef.current) {
+          socketRef.current.emit('user-screen-signal', { signal });
+        }
+      });
+      
+      connection.on('stream', (stream) => {
+        console.log('Screen share stream received locally');
+        screenShareService.playRemoteScreenShare(stream);
+      });
+      
+      connection.on('error', (error) => {
+        console.error('Screen share connection error:', error);
+      });
+      
+      // Store connection
+      connectionsRef.current.set('screen', connection);
+      
       dispatch({ type: 'SET_USER', payload: { isScreenSharing: true } });
+      
     } catch (error) {
-      console.error('Failed to start screen share:', error);
+      console.error('Screen share failed:', error);
       throw error;
     }
   }, []);
 
   const stopScreenShare = useCallback(() => {
-    videoService.stopScreenShare();
+    screenShareService.stopScreenShare();
     dispatch({ type: 'SET_USER', payload: { isScreenSharing: false } });
   }, []);
 
