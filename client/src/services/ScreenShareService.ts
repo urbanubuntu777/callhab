@@ -82,8 +82,34 @@ export class ScreenShareService {
       video.style.backgroundColor = '#000';
 
       video.onloadedmetadata = () => {
-        video.play().catch(err => {
+        console.log('Video metadata loaded, attempting to play...');
+        video.play().then(() => {
+          console.log('Screen share video playing successfully');
+        }).catch(err => {
           console.error('Failed to play screen share video:', err);
+          // Try to play after user interaction
+          const playButton = this.screenWindow!.document.createElement('button');
+          playButton.textContent = 'Нажмите для воспроизведения';
+          playButton.style.cssText = `
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 15px 30px;
+            font-size: 16px;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            z-index: 1000;
+          `;
+          playButton.onclick = () => {
+            video.play().then(() => {
+              playButton.remove();
+            }).catch(console.error);
+          };
+          this.screenWindow!.document.body.appendChild(playButton);
         });
       };
 
@@ -97,6 +123,17 @@ export class ScreenShareService {
   }
 
   private createThumbnail(): void {
+    // Only create thumbnail for admin (users don't need to see their own screen)
+    // Check if current user is admin
+    const isAdmin = document.querySelector('[data-role="admin"]') !== null || 
+                   window.location.search.includes('admin') ||
+                   document.title.includes('Admin');
+    
+    if (!isAdmin) {
+      console.log('Not admin, skipping thumbnail creation');
+      return;
+    }
+
     // Remove existing thumbnail
     const existingThumbnail = document.getElementById('screen-thumbnail');
     if (existingThumbnail) {
@@ -235,8 +272,34 @@ export class ScreenShareService {
       video.style.backgroundColor = '#000';
 
       video.onloadedmetadata = () => {
-        video.play().catch(err => {
+        console.log('Video metadata loaded, attempting to play...');
+        video.play().then(() => {
+          console.log('Screen share video playing successfully');
+        }).catch(err => {
           console.error('Failed to play screen share video:', err);
+          // Try to play after user interaction
+          const playButton = this.screenWindow!.document.createElement('button');
+          playButton.textContent = 'Нажмите для воспроизведения';
+          playButton.style.cssText = `
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 15px 30px;
+            font-size: 16px;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            z-index: 1000;
+          `;
+          playButton.onclick = () => {
+            video.play().then(() => {
+              playButton.remove();
+            }).catch(console.error);
+          };
+          this.screenWindow!.document.body.appendChild(playButton);
         });
       };
 

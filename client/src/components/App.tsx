@@ -124,7 +124,7 @@ export function App() {
 
   // Show main interface
   return (
-    <div className={`app main-interface ${user.role === 'admin' ? 'admin' : 'user'}`}>
+    <div className={`app main-interface ${user.role === 'admin' ? 'admin' : 'user'}`} data-role={user.role}>
       <div className="layout">
         <aside className="left-panel">
           <ParticipantsList />

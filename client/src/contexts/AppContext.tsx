@@ -331,7 +331,10 @@ export function AppProvider({ children }: { children: any }) {
             audioService.playRemoteAudio(stream, from);
           } else if (type === 'screen') {
             console.log('Playing screen share video:', stream);
-            screenShareService.playRemoteScreenShare(stream);
+            // Only show screen share for admin
+            if (state.user.role === 'admin') {
+              screenShareService.playRemoteScreenShare(stream);
+            }
             // Update participant to show screen sharing
             dispatch({
               type: 'UPDATE_PARTICIPANT',
@@ -548,7 +551,10 @@ export function AppProvider({ children }: { children: any }) {
       
       connection.on('stream', (stream) => {
         console.log('Screen share stream received locally');
-        screenShareService.playRemoteScreenShare(stream);
+        // Only show thumbnail for admin
+        if (state.user.role === 'admin') {
+          screenShareService.playRemoteScreenShare(stream);
+        }
       });
       
       connection.on('error', (error) => {

@@ -113,16 +113,27 @@ class AudioServiceImpl implements AudioService {
   }
 
   public setMute(muted: boolean): void {
-    console.log('Setting microphone mute state:', muted);
-    if (this.stream) {
-      this.stream.getAudioTracks().forEach(track => {
-        track.enabled = !muted;
-        console.log(`Audio track ${track.id} enabled:`, !muted);
-      });
-      console.log('Microphone muted:', muted);
-    } else {
-      console.warn('No audio stream available to mute/unmute');
+    console.log('=== SETTING MICROPHONE MUTE STATE ===');
+    console.log('Requested mute state:', muted);
+    
+    if (!this.stream) {
+      console.error('No audio stream available!');
+      return;
     }
+    
+    const audioTracks = this.stream.getAudioTracks();
+    console.log('Found audio tracks:', audioTracks.length);
+    
+    audioTracks.forEach((track, index) => {
+      const wasEnabled = track.enabled;
+      track.enabled = !muted;
+      console.log(`Track ${index} (${track.id}): ${wasEnabled} -> ${track.enabled}`);
+    });
+    
+    // Verify the change
+    const actualMuteState = this.getMuteState();
+    console.log('Actual mute state after change:', actualMuteState);
+    console.log('=== MICROPHONE MUTE SET COMPLETE ===');
   }
 
   public getMuteState(): boolean {
