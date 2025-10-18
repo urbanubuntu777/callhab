@@ -1,28 +1,27 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import io from 'socket.io-client';
+import Peer from 'simple-peer';
 
-// Dynamic import for simple-peer to avoid module loading issues
-let Peer = null;
-const loadPeer = async () => {
-  if (!Peer) {
-    try {
-      const simplePeer = await import('simple-peer');
-      Peer = simplePeer.default || simplePeer;
-      console.log('Simple-peer loaded successfully:', Peer);
-    } catch (err) {
-      console.error('Failed to load simple-peer:', err);
-    }
-  }
-  return Peer;
-};
+// Check if Peer is available
+console.log('Peer imported:', Peer, 'Type:', typeof Peer);
 
 // Helper function to create Peer instances safely
 const createPeer = async (config) => {
-  const PeerConstructor = await loadPeer();
+  console.log('Creating peer with config:', config);
+  
   if (!PeerConstructor || typeof PeerConstructor !== 'function') {
-    throw new Error('Peer constructor not available');
+    throw new Error('Peer constructor not available: ' + typeof PeerConstructor);
   }
-  return new PeerConstructor(config);
+  
+  console.log('Creating new Peer instance...');
+  try {
+    const peer = new PeerConstructor(config);
+    console.log('Peer created successfully:', peer);
+    return peer;
+  } catch (err) {
+    console.error('Failed to create Peer instance:', err);
+    throw err;
+  }
 };
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host;
