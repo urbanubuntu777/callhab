@@ -127,6 +127,7 @@ io.on('connection', (socket) => {
     if (!joinedRoomId) return;
     const room = rooms.get(joinedRoomId);
     if (room?.adminId !== socket.id) return;
+    console.log('Admin requesting screen share from user:', targetId);
     io.to(targetId).emit('admin-request-screen-share');
   });
 
@@ -137,6 +138,7 @@ io.on('connection', (socket) => {
     const participant = room?.participants.get(socket.id);
     if (!participant || participant.role !== 'user') return;
     
+    console.log('User started screen share:', socket.id);
     // Send to admin
     if (room.adminId) {
       io.to(room.adminId).emit('user-screen-share-started', { from: socket.id });
@@ -174,6 +176,19 @@ io.on('connection', (socket) => {
     // Notify admin
     if (room.adminId) {
       io.to(room.adminId).emit('user-stop-screen-share', { from: socket.id });
+    }
+  });
+  
+  // user rejects screen share request
+  socket.on('user-reject-screen-share', () => {
+    if (!joinedRoomId) return;
+    const room = rooms.get(joinedRoomId);
+    const participant = room?.participants.get(socket.id);
+    if (!participant || participant.role !== 'user') return;
+    
+    // Notify admin
+    if (room.adminId) {
+      io.to(room.adminId).emit('user-reject-screen-share', { from: socket.id });
     }
   });
 

@@ -64,6 +64,15 @@ export default function App() {
         if (prev.some((p) => p.socketId === socketId)) return prev;
         return [...prev, { socketId, name, role: joinedRole, isMicOn: micState }];
       });
+      
+      // Establish audio connection when new participant joins
+      if (joinedRole === 'user' && role === 'admin' && socketId !== socketRef.current.id) {
+        console.log('Admin: new user joined, establishing audio connection');
+        establishAudioConnection(socketId, true); // admin receiving from user
+      } else if (joinedRole === 'admin' && role === 'user' && socketId !== socketRef.current.id) {
+        console.log('User: admin joined, establishing audio connection');
+        establishAudioConnection(socketId, false); // user sending to admin
+      }
     });
     s.on('participant-left', ({ socketId }) => {
       setParticipants((prev) => prev.filter((p) => p.socketId !== socketId));
@@ -91,11 +100,11 @@ export default function App() {
     // Signaling handlers: audio channel user<->admin
     s.on('audio-signal', ({ from, signal }) => {
       console.log('Received audio signal from:', from, 'my role:', role);
-      handleSignal(from, signal, false, 'audio');
+      handleAudioSignal(from, signal);
     });
     s.on('admin-audio-signal', ({ from, signal }) => {
       console.log('Received admin audio signal from:', from, 'my role:', role);
-      handleSignal(from, signal, true, 'audio');
+      handleAudioSignal(from, signal);
     });
     s.on('screen-share-signal', ({ from, signal }) => {
       handleSignal(from, signal, false, 'screen');
@@ -107,10 +116,12 @@ export default function App() {
     // Screen share events
     s.on('admin-request-screen-share', async () => {
       if (role === 'user') {
+        console.log('User received screen share request from admin');
         // Show notification to user
         const confirmed = confirm('Админ запрашивает демонстрацию вашего экрана. Разрешить?');
         if (confirmed) {
           try {
+            console.log('User accepted screen share request');
             const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
             
             // Create peer connection to send screen to admin
@@ -141,26 +152,37 @@ export default function App() {
             // Notify admin that screen share started
             socketRef.current.emit('user-start-screen-share');
             
-            alert('Демонстрация экрана начата');
+            console.log('Screen share started successfully');
             
             // Handle screen share stop
             stream.getVideoTracks()[0].onended = () => {
+              console.log('User stopped screen share');
               peer.destroy();
               peersRef.current.delete('user-screen-share');
               socketRef.current.emit('user-stop-screen-share');
             };
           } catch (err) {
             console.error('User screen share failed:', err);
-            alert('Не удалось начать демонстрацию экрана');
+            if (err.name === 'NotAllowedError') {
+              alert('Демонстрация экрана отклонена пользователем');
+            } else {
+              alert('Не удалось начать демонстрацию экрана: ' + err.message);
+            }
           }
         } else {
-          alert('Демонстрация экрана отклонена');
+          console.log('User rejected screen share request');
+          // Notify admin that user rejected
+          socketRef.current.emit('user-reject-screen-share');
         }
       }
     });
     
     s.on('user-screen-share-started', ({ from }) => {
       console.log('User started screen share:', from);
+      if (role === 'admin') {
+        setIsShareOn(true);
+        console.log('Admin: screen share started, waiting for video stream');
+      }
     });
     
     s.on('user-screen-signal', ({ from, signal }) => {
@@ -221,6 +243,15 @@ export default function App() {
         if (centerVideoRef.current) {
           centerVideoRef.current.srcObject = null;
         }
+        setIsShareOn(false);
+      }
+    });
+    
+    s.on('user-reject-screen-share', ({ from }) => {
+      console.log('User rejected screen share:', from);
+      if (role === 'admin') {
+        alert('Пользователь отклонил демонстрацию экрана');
+        setIsShareOn(false);
       }
     });
 
@@ -268,6 +299,89 @@ export default function App() {
     }
   }
 
+  // New simplified audio handling
+  function establishAudioConnection(targetId, isAdminReceiving) {
+    console.log('Establishing audio connection:', { targetId, isAdminReceiving, role });
+    
+    if (isAdminReceiving && role === 'admin') {
+      // Admin receiving from user - create peer without stream
+      const peer = new Peer({ 
+        initiator: false, 
+        trickle: false,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
+        }
+      });
+      
+      peer.on('signal', (sig) => {
+        console.log('Admin responding to user audio signal');
+        socketRef.current.emit('admin-audio-signal', { targetId, signal: sig });
+      });
+      
+      peer.on('stream', (remoteStream) => {
+        console.log('Admin received user audio stream');
+        const audio = document.createElement('audio');
+        audio.srcObject = remoteStream;
+        audio.autoplay = true;
+        audio.volume = 1.0;
+        audio.style.display = 'none';
+        audio.id = `audio-${targetId}`;
+        document.body.appendChild(audio);
+        
+        audio.onloadedmetadata = () => {
+          console.log('✅ Admin now hearing user audio from:', targetId);
+          audio.play().catch(err => console.error('Failed to play audio:', err));
+        };
+        
+        if (!window.adminAudioElements) window.adminAudioElements = [];
+        window.adminAudioElements.push(audio);
+      });
+      
+      peer.on('error', (err) => {
+        console.error('Admin audio peer error:', err);
+      });
+      
+      peersRef.current.set(targetId, peer);
+    } else if (!isAdminReceiving && role === 'user') {
+      // User sending to admin - create peer with mic stream
+      ensureMic().then(stream => {
+        const peer = new Peer({ 
+          initiator: true, 
+          trickle: false,
+          stream,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+          }
+        });
+        
+        peer.on('signal', (sig) => {
+          console.log('User sending audio signal to admin');
+          socketRef.current.emit('audio-signal', { targetId, signal: sig });
+        });
+        
+        peer.on('error', (err) => {
+          console.error('User audio peer error:', err);
+        });
+        
+        peersRef.current.set(targetId, peer);
+      });
+    }
+  }
+  
+  function handleAudioSignal(fromId, signal) {
+    console.log('Handling audio signal from:', fromId);
+    const peer = peersRef.current.get(fromId);
+    if (peer) {
+      peer.signal(signal);
+    }
+  }
+  
   function handleSignal(fromId, signal, adminToUser, channel = 'audio') {
     console.log('Handling signal:', { fromId, channel, role, adminToUser });
     
@@ -276,19 +390,10 @@ export default function App() {
       const initiator = false; // receiving side
       let stream = undefined;
       
-      // For audio: admin receives from users, users receive from admin
-      if (channel === 'audio') {
-        if (role === 'admin' && !adminToUser) {
-          // Admin receiving from user - no stream needed
-          stream = undefined;
-        } else if (role === 'user' && adminToUser) {
-          // User receiving from admin - no stream needed
-          stream = undefined;
-        } else {
-          stream = selectLocalStreamForChannel(channel);
-        }
-      } else {
-        stream = selectLocalStreamForChannel(channel);
+      if (channel === 'screen') {
+        stream = adminScreenStreamRef.current || undefined;
+      } else if (channel === 'camera') {
+        stream = adminCamStreamRef.current || undefined;
       }
       
       console.log('Creating new peer for:', fromId, 'with stream:', !!stream, 'role:', role);
@@ -307,13 +412,7 @@ export default function App() {
       
       peer.on('signal', (sig) => {
         console.log('Peer signaling back to:', fromId, 'channel:', channel);
-        if (channel === 'audio') {
-          if (role === 'admin') {
-            socketRef.current.emit('admin-audio-signal', { targetId: fromId, signal: sig });
-          } else {
-            socketRef.current.emit('audio-signal', { targetId: fromId, signal: sig });
-          }
-        } else if (channel === 'screen') {
+        if (channel === 'screen') {
           socketRef.current.emit('screen-share-signal', { targetId: fromId, signal: sig });
         } else if (channel === 'camera') {
           socketRef.current.emit('video-signal', { targetId: fromId, signal: sig });
@@ -327,33 +426,8 @@ export default function App() {
       peer.on('stream', (remoteStream) => {
         console.log('Received stream from:', fromId, 'channel:', channel, 'stream:', remoteStream);
         
-        // For audio: admin hears users
-        if (channel === 'audio' && role === 'admin') {
-          // Create audio element for admin to hear users
-          const audio = document.createElement('audio');
-          audio.srcObject = remoteStream;
-          audio.autoplay = true;
-          audio.volume = 1.0;
-          audio.style.display = 'none'; // Hide the audio element
-          audio.id = `audio-${fromId}`;
-          document.body.appendChild(audio);
-          
-          // Test if audio is working
-          audio.onloadedmetadata = () => {
-            console.log('Audio metadata loaded for:', fromId);
-            audio.play().then(() => {
-              console.log('✅ Admin now hearing user audio from:', fromId);
-            }).catch(err => {
-              console.error('❌ Failed to play audio:', err);
-            });
-          };
-          
-          // Store reference to remove later
-          if (!window.adminAudioElements) window.adminAudioElements = [];
-          window.adminAudioElements.push(audio);
-        }
         // Center video shows admin stream (screen or camera) for users
-        else if ((channel === 'screen' || channel === 'camera') && role === 'user') {
+        if ((channel === 'screen' || channel === 'camera') && role === 'user') {
           if (centerVideoRef.current) {
             centerVideoRef.current.srcObject = remoteStream;
             centerVideoRef.current.play().catch(() => {});
@@ -473,47 +547,13 @@ export default function App() {
       setParticipants(updatedParticipants);
       setAdminId(aid || null);
 
-      // Establish audio channel: users connect to admin
+      // Establish audio connections for existing participants
       if (role === 'user' && aid) {
-        const stream = await ensureMic();
-        console.log('User creating peer connection to admin:', aid);
-        
-        const peer = new Peer({ 
-          initiator: true, 
-          trickle: false, 
-          stream,
-          config: {
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-          }
-        });
-        
-        peer.on('signal', (sig) => {
-          console.log('User sending signal to admin:', aid);
-          socketRef.current.emit('audio-signal', { targetId: aid, signal: sig });
-        });
-        
-        peer.on('connect', () => {
-          console.log('User connected to admin via WebRTC');
-        });
-        
-        peer.on('close', () => {
-          console.log('User peer connection closed');
-          peer.destroy();
-        });
-        
-        peer.on('error', (err) => {
-          console.error('User peer error:', err);
-          peer.destroy();
-        });
-        
-        peersRef.current.set(aid, peer);
+        console.log('User: establishing audio connection to admin:', aid);
+        establishAudioConnection(aid, false); // user sending to admin
       } else if (role === 'admin') {
-        // Admin waits for user connections
-        console.log('Admin ready to receive audio from users');
-        await ensureMic(); // Admin also needs mic stream for WebRTC
+        console.log('Admin: ready to receive audio from users');
+        // Admin doesn't need to establish connections here, will be done in participant-joined
       }
     } catch (e) {
       // eslint-disable-next-line no-alert
@@ -572,8 +612,11 @@ export default function App() {
     // Request screen share from first user found
     const user = participants.find(p => p.role === 'user');
     if (user) {
+      console.log('Admin requesting screen share from user:', user.socketId);
       socketRef.current.emit('admin-request-screen-share', { targetId: user.socketId });
-      setIsShareOn(true);
+      // Don't set isShareOn here - wait for user to accept
+    } else {
+      alert('Нет пользователей для демонстрации экрана');
     }
   }
 
