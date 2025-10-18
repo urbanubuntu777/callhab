@@ -348,12 +348,15 @@ export function AppProvider({ children }: { children: any }) {
       
       console.log('Joined successfully:', { participants, adminId });
       
+      // Set initial mic state based on actual audio service state
+      const initialMicState = audioService.getMuteState();
+      
       dispatch({
         type: 'SET_USER',
         payload: {
           userName,
           role,
-          isMicOn: role === 'user' // Users have mic on by default
+          isMicOn: !initialMicState
         }
       });
       
@@ -435,12 +438,17 @@ export function AppProvider({ children }: { children: any }) {
   }, []);
 
   const toggleMic = useCallback(() => {
-    audioService.toggleMute();
-    const isMuted = audioService.isMuted();
-    dispatch({ type: 'SET_USER', payload: { isMicOn: !isMuted } });
+    const currentMuteState = audioService.getMuteState();
+    audioService.setMute(!currentMuteState);
+    const newMuteState = audioService.getMuteState();
+    const isMicOn = !newMuteState;
+    
+    console.log('Toggling mic:', { currentMuteState, newMuteState, isMicOn });
+    
+    dispatch({ type: 'SET_USER', payload: { isMicOn } });
     
     if (socketRef.current) {
-      socketRef.current.emit('admin-toggle-own-mic', { enabled: !isMuted });
+      socketRef.current.emit('admin-toggle-own-mic', { enabled: isMicOn });
     }
   }, []);
 

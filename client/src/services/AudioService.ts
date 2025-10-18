@@ -117,7 +117,14 @@ class AudioServiceImpl implements AudioService {
       this.stream.getAudioTracks().forEach(track => {
         track.enabled = !muted;
       });
+      console.log('Microphone muted:', muted);
     }
+  }
+
+  public getMuteState(): boolean {
+    if (!this.stream) return true;
+    const audioTracks = this.stream.getAudioTracks();
+    return audioTracks.every(track => !track.enabled);
   }
 }
 
