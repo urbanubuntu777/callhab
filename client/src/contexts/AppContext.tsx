@@ -166,11 +166,18 @@ export function AppProvider({ children }: { children: any }) {
       console.log('Participant left:', socketId);
       dispatch({ type: 'REMOVE_PARTICIPANT', payload: socketId });
       
-      // Clean up WebRTC connection
-      const connection = connectionsRef.current.get(socketId);
-      if (connection) {
-        connection.destroy();
-        connectionsRef.current.delete(socketId);
+      // Clean up WebRTC connections for this participant
+      const audioConnection = connectionsRef.current.get(`${socketId}_audio`);
+      const screenConnection = connectionsRef.current.get(`${socketId}_screen`);
+      
+      if (audioConnection) {
+        audioConnection.destroy();
+        connectionsRef.current.delete(`${socketId}_audio`);
+      }
+      
+      if (screenConnection) {
+        screenConnection.destroy();
+        connectionsRef.current.delete(`${socketId}_screen`);
       }
     });
 
@@ -292,7 +299,9 @@ export function AppProvider({ children }: { children: any }) {
   // WebRTC signal handler
   const handleWebRTCSignal = async (from: string, signal: any, type: 'audio' | 'screen') => {
     try {
-      let connection = connectionsRef.current.get(from);
+      // Create separate connection keys for different media types
+      const connectionKey = `${from}_${type}`;
+      let connection = connectionsRef.current.get(connectionKey);
       
       if (!connection) {
         console.log(`Creating new ${type} connection for:`, from);
@@ -300,11 +309,11 @@ export function AppProvider({ children }: { children: any }) {
         const config = {
           initiator: false,
           trickle: false,
-          stream: type === 'audio' ? audioService.getStream() : videoService.getScreenStream() || undefined
+          stream: type === 'audio' ? audioService.getStream() : undefined
         };
         
         connection = await webRTCService.createConnection(config);
-        connectionsRef.current.set(from, connection);
+        connectionsRef.current.set(connectionKey, connection);
         
         // Set up event handlers
         connection.on('signal', (data) => {
@@ -353,7 +362,7 @@ export function AppProvider({ children }: { children: any }) {
         
         connection.on('close', () => {
           console.log(`WebRTC ${type} connection closed:`, from);
-          connectionsRef.current.delete(from);
+          connectionsRef.current.delete(connectionKey);
           if (type === 'audio') {
             audioService.removeAudioElement(from);
           }
@@ -442,7 +451,8 @@ export function AppProvider({ children }: { children: any }) {
       };
       
       const connection = await webRTCService.createConnection(config);
-      connectionsRef.current.set(targetId, connection);
+      const connectionKey = `${targetId}_audio`;
+      connectionsRef.current.set(connectionKey, connection);
       
       connection.on('signal', (data) => {
         if (socketRef.current) {
@@ -561,8 +571,9 @@ export function AppProvider({ children }: { children: any }) {
         console.error('Screen share connection error:', error);
       });
       
-      // Store connection
-      connectionsRef.current.set('screen', connection);
+      // Store connection with proper key
+      const connectionKey = `${state.user.userName}_screen`;
+      connectionsRef.current.set(connectionKey, connection);
       
       dispatch({ type: 'SET_USER', payload: { isScreenSharing: true } });
       
