@@ -68,6 +68,10 @@ class AudioServiceImpl implements AudioService {
     audio.volume = 1.0;
     audio.style.display = 'none';
     audio.id = `audio-${connectionId}`;
+    audio.muted = false; // Start unmuted
+    
+    // Store reference with mute state
+    (audio as any).customMuted = false;
     
     audio.onloadedmetadata = () => {
       console.log(`Audio metadata loaded for: ${connectionId}`);
@@ -82,6 +86,26 @@ class AudioServiceImpl implements AudioService {
 
     document.body.appendChild(audio);
     this.audioElements.push(audio);
+  }
+  
+  public muteRemoteAudio(connectionId: string, muted: boolean): void {
+    console.log(`Setting remote audio mute for ${connectionId}:`, muted);
+    const audio = document.getElementById(`audio-${connectionId}`) as HTMLAudioElement;
+    if (audio) {
+      audio.muted = muted;
+      (audio as any).customMuted = muted;
+      console.log(`Remote audio ${connectionId} ${muted ? 'muted' : 'unmuted'}`);
+    } else {
+      console.warn(`Audio element not found for: ${connectionId}`);
+    }
+  }
+  
+  public muteAllRemoteAudio(muted: boolean): void {
+    console.log(`Muting all remote audio:`, muted);
+    this.audioElements.forEach(audio => {
+      audio.muted = muted;
+      (audio as any).customMuted = muted;
+    });
   }
 
   public removeAudioElement(connectionId: string): void {

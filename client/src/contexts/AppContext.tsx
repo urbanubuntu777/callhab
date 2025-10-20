@@ -219,7 +219,10 @@ export function AppProvider({ children }: { children: any }) {
 
     socket.on('admin-screen-signal', ({ signal }) => {
       console.log('Received admin screen signal response');
-      handleWebRTCSignal('admin', signal, 'screen');
+      // Only users (who initiated screen share) should handle this
+      if (state.user.role === 'user') {
+        handleWebRTCSignal('admin', signal, 'screen');
+      }
     });
 
     // Screen share events
@@ -400,13 +403,9 @@ export function AppProvider({ children }: { children: any }) {
       
       console.log('Joined successfully:', { participants, adminId });
       
-      // Set initial mic state - users start with mic on, admin with mic off
-      const initialMicOn = role === 'user';
-      if (role === 'admin') {
-        audioService.setMute(true); // Admin starts muted
-      } else {
-        audioService.setMute(false); // Users start unmuted
-      }
+      // Admin: isMicOn controls if they HEAR users (remote audio muted/unmuted)
+      // User: isMicOn controls if their mic is on (but not used in current implementation)
+      const initialMicOn = true; // Everyone starts with mic "on" (admin hears users)
       
       dispatch({
         type: 'SET_USER',
@@ -496,34 +495,23 @@ export function AppProvider({ children }: { children: any }) {
   }, []);
 
   const toggleMic = useCallback(() => {
-    console.log('=== MICROPHONE TOGGLE START ===');
+    console.log('=== ADMIN MICROPHONE TOGGLE START ===');
     
-    // Get current state from audio service
-    const currentMuteState = audioService.getMuteState();
-    console.log('Current mute state from service:', currentMuteState);
+    // Admin toggles REMOTE audio (what they hear from users)
+    const currentMicState = state.user.isMicOn;
+    console.log('Current mic state:', currentMicState);
     
-    // Toggle the state
-    const newMuteState = !currentMuteState;
-    console.log('New mute state:', newMuteState);
+    const newMicState = !currentMicState;
+    console.log('New mic state:', newMicState);
     
-    // Apply to audio service
-    audioService.setMute(newMuteState);
-    
-    // Verify the change
-    const actualMuteState = audioService.getMuteState();
-    console.log('Actual mute state after change:', actualMuteState);
+    // Mute/unmute ALL remote audio
+    audioService.muteAllRemoteAudio(!newMicState);
     
     // Update UI state
-    const isMicOn = !actualMuteState;
-    dispatch({ type: 'SET_USER', payload: { isMicOn } });
+    dispatch({ type: 'SET_USER', payload: { isMicOn: newMicState } });
     
-    // Emit to server
-    if (socketRef.current) {
-      socketRef.current.emit('admin-toggle-own-mic', { enabled: isMicOn });
-    }
-    
-    console.log('=== MICROPHONE TOGGLE END ===', { isMicOn, muted: actualMuteState });
-  }, []);
+    console.log('=== ADMIN MICROPHONE TOGGLE END ===', { isMicOn: newMicState, remoteAudioMuted: !newMicState });
+  }, [state.user.isMicOn]);
 
   const toggleVideo = useCallback(async () => {
     try {
@@ -589,11 +577,22 @@ export function AppProvider({ children }: { children: any }) {
   }, []);
 
   const toggleUserMic = useCallback((socketId: string) => {
-    if (socketRef.current) {
-      const participant = state.room.participants.find(p => p.socketId === socketId);
-      if (participant) {
-        socketRef.current.emit('admin-toggle-user-mic', { targetId: socketId, mute: participant.isMicOn });
-      }
+    console.log('=== ADMIN TOGGLE USER MIC ===', socketId);
+    const participant = state.room.participants.find(p => p.socketId === socketId);
+    if (participant) {
+      const newMicState = !participant.isMicOn;
+      console.log(`Toggling user ${socketId} mic:`, participant.isMicOn, '->', newMicState);
+      
+      // Mute/unmute this specific user's audio
+      audioService.muteRemoteAudio(socketId, !newMicState);
+      
+      // Update UI
+      dispatch({
+        type: 'UPDATE_PARTICIPANT',
+        payload: { socketId, updates: { isMicOn: newMicState } }
+      });
+      
+      console.log(`User ${socketId} mic ${newMicState ? 'ON' : 'OFF'}`);
     }
   }, [state.room.participants]);
 

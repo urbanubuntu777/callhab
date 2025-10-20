@@ -123,16 +123,10 @@ export class ScreenShareService {
   }
 
   private createThumbnail(): void {
-    // Only create thumbnail for admin (users don't need to see their own screen)
-    // Check if current user is admin
-    const isAdmin = document.querySelector('[data-role="admin"]') !== null || 
-                   window.location.search.includes('admin') ||
-                   document.title.includes('Admin');
-    
-    if (!isAdmin) {
-      console.log('Not admin, skipping thumbnail creation');
-      return;
-    }
+    // This method is called by users sharing their screen
+    // They don't need to see a thumbnail
+    console.log('User: Not creating thumbnail for own screen share');
+    return;
 
     // Remove existing thumbnail
     const existingThumbnail = document.getElementById('screen-thumbnail');
@@ -205,7 +199,7 @@ export class ScreenShareService {
   }
 
   public playRemoteScreenShare(stream: MediaStream): void {
-    console.log('Playing remote screen share:', stream);
+    console.log('Admin: Playing remote screen share:', stream);
     
     // Create thumbnail for remote screen share
     const existingThumbnail = document.getElementById('screen-thumbnail');
@@ -218,23 +212,35 @@ export class ScreenShareService {
     this.thumbnailElement.srcObject = stream;
     this.thumbnailElement.autoplay = true;
     this.thumbnailElement.playsInline = true;
-    this.thumbnailElement.muted = false;
+    this.thumbnailElement.muted = true; // Mute thumbnail video
     this.thumbnailElement.style.width = '100%';
     this.thumbnailElement.style.height = '100%';
-    this.thumbnailElement.style.objectFit = 'cover';
+    this.thumbnailElement.style.objectFit = 'contain';
     this.thumbnailElement.style.borderRadius = '8px';
     this.thumbnailElement.style.cursor = 'pointer';
+    this.thumbnailElement.style.backgroundColor = '#000';
 
     // Add click handler to open full screen
     this.thumbnailElement.onclick = () => {
+      console.log('Thumbnail clicked, opening full screen');
       this.openFullScreen(stream);
     };
 
     // Add to main video container
     const container = document.querySelector('.video-container');
     if (container) {
+      console.log('Adding thumbnail to video container');
       container.innerHTML = '';
       container.appendChild(this.thumbnailElement);
+      
+      // Try to play
+      this.thumbnailElement.play().then(() => {
+        console.log('Thumbnail playing successfully');
+      }).catch(err => {
+        console.error('Failed to play thumbnail:', err);
+      });
+    } else {
+      console.error('Video container not found!');
     }
   }
 
