@@ -221,7 +221,19 @@ export function AppProvider({ children }: { children: any }) {
       console.log('Received admin screen signal response');
       // Only users (who initiated screen share) should handle this
       if (state.user.role === 'user') {
-        handleWebRTCSignal('admin', signal, 'screen');
+        // Find existing screen connection
+        const connectionKey = `${state.user.userName}_screen`;
+        const existingConnection = connectionsRef.current.get(connectionKey);
+        
+        if (existingConnection) {
+          console.log('Using existing screen connection:', connectionKey);
+          existingConnection.signal(signal).catch((err: any) => {
+            console.error('Error signaling existing connection:', err);
+          });
+        } else {
+          console.warn('No existing screen connection found, creating new one');
+          handleWebRTCSignal('admin', signal, 'screen');
+        }
       }
     });
 
